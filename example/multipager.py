@@ -29,7 +29,7 @@ cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16
 class MultiPager(gr.top_block):
     def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale,
                      filename = None, file_samprate = None,
-                     osmo_args = None, osmo_rf_gain = None, osmo_if_gain = None, osmo_bb_gain = None):
+                     osmo_args = None, osmo_freq_cor = None, osmo_rf_gain = None, osmo_if_gain = None, osmo_bb_gain = None):
         gr.top_block.__init__(self, "Multipager")
 
         sample_rate = num_chan * ch_width
@@ -46,7 +46,8 @@ class MultiPager(gr.top_block):
             self.source = osmosdr.source(args = osmo_args)
             self.source.set_sample_rate(sample_rate)
             self.source.set_center_freq(freq, 0)
-            self.source.set_freq_corr(0, 0)
+            if osmo_freq_cor != None:
+                self.source.set_freq_corr(osmo_freq_cor, 0)
             self.source.set_dc_offset_mode(0, 0)
             self.source.set_iq_balance_mode(0, 0)
             self.source.set_gain_mode(False, 0)
@@ -137,7 +138,7 @@ class FMtoCommand(gr.hier_block2):
             self.connect((mult, 0), (audio_sink, 0))
 
 def main():
-    freq = 148.664e6
+    freq = 148.6625e6
     ch_width = 25e3
     audio_rate = 22.05e3
     num_chan = 35
@@ -151,6 +152,7 @@ def main():
                         #filename = samplefile,
                         #file_samprate = 22.05e3 * 40,
                         osmo_args = "hackrf",
+                        osmo_freq_cor = 10,
                         osmo_rf_gain = 0,
                         osmo_if_gain = 36,
                         osmo_bb_gain = 44,
