@@ -26,17 +26,35 @@ import sys
 
 # Command to run multimon-ng
 # Can't avoid using sox (for unknown reasons multimon-ng doesn't like direct output from GNURadio) so convert from our channel rate to what it wants
-cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -e -u -"
+cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -e -u -"
 
-multimonre = re.compile('([A-Z0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
+pocsagre = re.compile('([A-Z0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
+flexre = re.compile('FLEX: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) ([0-9]+)/([0-9]+)/([A-Za-z]) ([0-9]+).([0-9]+) \[([0-9]+)\] ALN (.*)')
 def parse_multimon(fh, chfreq):
     line = fh.readline().strip()
-    m = multimonre.match(line)
-    if m == None:
-        print('Unparseable line "%s"' % (line))
+    if print_pocsag(chfreq, line):
         return
+    elif print_flex(chfreq, line):
+        return
+    else:
+        print('Unparseable line "%s"' % (line))
+
+def print_pocsag(chfreq, line):
+    m = pocsagre.match(line)
+    if m == None:
+        return False
     (rate, address, function, ptype, msg) = m.groups()
     print('%.4f Mhz: %s: Address %s Function: %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
+    return True
+
+def print_flex(chfreq, line):
+    m = flexre.match(line)
+    if m == None:
+        return False
+    (ts, baud, level, phaseno, cycleno, frameno, capcode, msg) = m.groups()
+    print('%.4f MHz: FLEX %s %s/%s/%s %s.%s [%s] ALN: %s' % (chfreq / 1e6, ts, baud, level, phaseno, cycleno, frameno, capcode, msg))
+
+    return True
 
 class MultiPager(gr.top_block):
     def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, loop,
