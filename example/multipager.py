@@ -16,18 +16,30 @@ from gnuradio.eng_option import eng_option
 from gnuradio.filter import firdes
 from gnuradio.filter import pfb
 
+import trollius as asyncio
 import exceptions
 import osmosdr
+import re
 import subprocess
 import sip
 import sys
 
 # Command to run multimon-ng
 # Can't avoid using sox (for unknown reasons multimon-ng doesn't like direct output from GNURadio) so convert from our channel rate to what it wants
-cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -e -u -f alpha --timestamp --label \"{chfreq:.3f} MHz:\" -"
+cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -e -u -"
+
+multimonre = re.compile('([A-Z0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
+def parse_multimon(fh, chfreq):
+    line = fh.readline().strip()
+    m = multimonre.match(line)
+    if m == None:
+        print('Unparseable line "%s"' % (line))
+        return
+    (rate, address, function, ptype, msg) = m.groups()
+    print('%.4f Mhz: %s: Address %s Function: %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
 
 class MultiPager(gr.top_block):
-    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale,
+    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, loop,
                      filename = None, file_samprate = None,
                      osmo_args = None, osmo_freq_cor = None, osmo_rf_gain = None, osmo_if_gain = None, osmo_bb_gain = None):
         gr.top_block.__init__(self, "Multipager")
@@ -94,11 +106,12 @@ class MultiPager(gr.top_block):
 
             if sel[i]:
                 print("Channel %d %.3f MHz" % (i, chfreq / 1e6))
-                command = cmdpat.format(audio_in = ch_width, audio_out = audio_rate, chfreq = (chfreq / 1e6))
+                command = cmdpat.format(audio_in = ch_width, audio_out = audio_rate)
                 fm = FMtoCommand(squelch, int(ch_width), 5e3, out_scale, chfreq, command, do_audio = (i == 0) and False)
 
                 self.connect((self.pfb_channelizer_ccf_0, i), (fm, 0))
                 self.fms[chfreq] = fm
+                loop.add_reader(fm.p.stdout, parse_multimon, fm.p.stdout, chfreq)
             else:
                 n = blocks.null_sink(gr.sizeof_gr_complex*1)
                 self.connect((self.pfb_channelizer_ccf_0, i), (n, 0))
@@ -109,33 +122,33 @@ class FMtoCommand(gr.hier_block2):
                                     gr.io_signature(1, 1, gr.sizeof_gr_complex),
                                     gr.io_signature(0, 0, gr.sizeof_gr_complex))
 
-        analog_pwr_squelch = analog.pwr_squelch_cc(squelch, 1e-4, 0, True)
-        analog_nbfm_rx = analog.nbfm_rx(
+        self.analog_pwr_squelch = analog.pwr_squelch_cc(squelch, 1e-4, 0, True)
+        self.analog_nbfm_rx = analog.nbfm_rx(
         	audio_rate = ch_width,
             quad_rate = ch_width,
         	tau = 75e-6,
         	max_dev = max_dev,
           )
-        blocks_float_to_short = blocks.float_to_short(1, out_scale)
+        self.blocks_float_to_short = blocks.float_to_short(1, out_scale)
         # OSX: if you get Resource Temporarily Unavailable you probably need to increase maxproc, eg
         # sudo launchctl limit maxproc 2000 3000
-        self.p = subprocess.Popen(command, shell = True, stdin = subprocess.PIPE)
-        sink = blocks.file_descriptor_sink(gr.sizeof_short*1, self.p.stdin.fileno())
-        self.connect(self, (analog_pwr_squelch, 0))
-        self.connect((analog_pwr_squelch, 0), (analog_nbfm_rx, 0))
-        self.connect((analog_nbfm_rx, 0), (blocks_float_to_short, 0))
-        self.connect((blocks_float_to_short, 0), (sink, 0))
+        self.p = subprocess.Popen(command, shell = True, stdin = subprocess.PIPE, stdout = subprocess.PIPE)
+        self.sink = blocks.file_descriptor_sink(gr.sizeof_short*1, self.p.stdin.fileno())
+        self.connect(self, (self.analog_pwr_squelch, 0))
+        self.connect((self.analog_pwr_squelch, 0), (self.analog_nbfm_rx, 0))
+        self.connect((self.analog_nbfm_rx, 0), (self.blocks_float_to_short, 0))
+        self.connect((self.blocks_float_to_short, 0), (self.sink, 0))
         if do_audio:
-            resampler = filter.rational_resampler_fff(
+            self.resampler = filter.rational_resampler_fff(
                 interpolation = 441,
                 decimation = 425,
                 taps = None,
                 fractional_bw = None)
-            mult = blocks.multiply_const_vff((0.2, ))
-            audio_sink = audio.sink(22050, '', True)
-            self.connect((analog_nbfm_rx, 0), (resampler, 0))
-            self.connect((resampler, 0), (mult, 0))
-            self.connect((mult, 0), (audio_sink, 0))
+            self.mult = blocks.multiply_const_vff((0.2, ))
+            self.audio_sink = audio.sink(22050, '', True)
+            self.connect((self.analog_nbfm_rx, 0), (self.resampler, 0))
+            self.connect((self.resampler, 0), (self.mult, 0))
+            self.connect((self.mult, 0), (self.audio_sink, 0))
 
 def main():
     freq = 148.6625e6
@@ -148,7 +161,9 @@ def main():
     # File must be complex samples
     samplefile = 'sampler-22050x40.raw'
 
-    tb = MultiPager(freq, ch_width, num_chan, audio_rate, squelch, out_scale,
+    loop = asyncio.get_event_loop()
+
+    tb = MultiPager(freq, ch_width, num_chan, audio_rate, squelch, out_scale, loop,
                         #filename = samplefile,
                         #file_samprate = 22.05e3 * 40,
                         osmo_args = "hackrf",
@@ -159,10 +174,9 @@ def main():
                         )
     tb.start()
     try:
-        raw_input('Press Enter to quit: ')
-    except EOFError:
-        pass
-
+        loop.run_forever()
+    finally:
+         loop.close()
     tb.stop()
     tb.wait()
 
