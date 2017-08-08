@@ -10,7 +10,7 @@ from gnuradio import analog
 from gnuradio import audio
 from gnuradio import blocks
 from gnuradio import eng_notation
-from gnuradio import filter
+from gnuradio import filter as grfilter
 from gnuradio import gr
 from gnuradio.eng_option import eng_option
 from gnuradio.filter import firdes
@@ -24,6 +24,7 @@ import osmosdr
 import re
 import subprocess
 import sip
+import string
 import sys
 import zmq
 
@@ -50,6 +51,8 @@ def process_pocsag(bcast, chfreq, line):
     if m == None:
         return False
     (capts, rate, address, function, ptype, msg) = m.groups()
+    printable = set(string.printable)
+    msg = filter(lambda x: x in printable, msg)
     if bcast == None:
         print('%.4f Mhz: POCSAG%s: Address %s Function: %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
     else:
@@ -70,6 +73,8 @@ def process_flex(bcast, chfreq, line):
     if m == None:
         return False
     (capts, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg) = m.groups()
+    printable = set(string.printable)
+    msg = filter(lambda x: x in printable, msg)
     if bcast == None:
         print('%.4f MHz: FLEX %s %s/%s/%s %s.%s [%s] ALN: %s' % (chfreq / 1e6, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg))
     else:
@@ -135,9 +140,9 @@ class MultiPager(gr.top_block):
         ##################################################
         if file_samprate != None:
             print('Resampling %f' % (file_samprate / sample_rate))
-            self.filter = filter.fir_filter_ccf(1, firdes.low_pass(
+            self.filter = grfilter.fir_filter_ccf(1, firdes.low_pass(
                 1, file_samprate, sample_rate / 2, 1e4, firdes.WIN_HAMMING, 6.76))
-            self.resampler = filter.fractional_resampler_cc(0, file_samprate / sample_rate)
+            self.resampler = grfilter.fractional_resampler_cc(0, file_samprate / sample_rate)
             self.connect((self.source, 0), (self.filter, 0))
             self.connect((self.filter, 0), (self.resampler, 0))
             self.connect((self.resampler, 0), (self.pfb_channelizer_ccf_0, 0))
@@ -189,7 +194,7 @@ class FMtoCommand(gr.hier_block2):
         self.connect((self.analog_nbfm_rx, 0), (self.blocks_float_to_short, 0))
         self.connect((self.blocks_float_to_short, 0), (self.sink, 0))
         if do_audio:
-            self.resampler = filter.rational_resampler_fff(
+            self.resampler = grfilter.rational_resampler_fff(
                 interpolation = 441,
                 decimation = 425,
                 taps = None,
