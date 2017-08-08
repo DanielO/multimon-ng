@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS pages(
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     type    TEXT,
     chfreq  REAL,
-    captime INTEGER
+    captime INTEGER,
+    msg     TEXT
 );
 ''')
         c.execute('''
@@ -29,7 +30,6 @@ CREATE TABLE IF NOT EXISTS pocsag_pages(
     address INTEGER,
     func    INTEGER,
     ptype   TEXT,
-    msg     TEXT,
 
     FOREIGN KEY(pid) REFERENCES pages(id)
 );
@@ -44,7 +44,6 @@ CREATE TABLE IF NOT EXISTS flex_pages(
     cycleno INTEGER,
     frameno INTEGER,
     capcode INTEGER,
-    msg     TEXT,
 
     FOREIGN KEY(pid) REFERENCES pages(id)
 );
@@ -60,19 +59,19 @@ CREATE TABLE IF NOT EXISTS flex_pages(
             print(page)
         else:
             if page['type'] == 'POCSAG':
-                c.execute('INSERT INTO pages(type, chfreq, captime) VALUES (?, ?, datetime(?))',
-                              (page['type'], page['chfreq'], page['capts']))
+                c.execute('INSERT INTO pages(type, chfreq, captime, msg) VALUES (?, ?, datetime(?), ?)',
+                              (page['type'], page['chfreq'], page['capts'], page['msg']))
                 pid = c.lastrowid
-                c.execute('INSERT INTO pocsag_pages(pid, rate, address, func, ptype, msg) VALUES (?, ?, ?, ?, ?, ?)',
-                              (pid, page['rate'], page['address'], page['function'], page['ptype'], page['msg']))
+                c.execute('INSERT INTO pocsag_pages(pid, rate, address, func, ptype) VALUES (?, ?, ?, ?, ?)',
+                              (pid, page['rate'], page['address'], page['function'], page['ptype']))
                 c.execute('INSERT INTO pages_fts(pid, msg) VALUES (?, ?)', (pid, page['msg']))
                 db.commit()
             elif page['type'] == 'FLEX':
-                c.execute('INSERT INTO pages(type, chfreq, captime) VALUES (?, ?, datetime(?))',
-                              (page['type'], page['chfreq'], page['capts']))
+                c.execute('INSERT INTO pages(type, chfreq, captime, msg) VALUES (?, ?, datetime(?), ?)',
+                              (page['type'], page['chfreq'], page['capts'], page['msg']))
                 pid = c.lastrowid
-                c.execute('INSERT INTO flex_pages(pid, msgtime, baud, level, phaseno, cycleno, frameno, capcode, msg) VALUES (?, datetime(?), ?, ?, ?, ?, ?, ?, ?)',
-                              (pid, page['msgts'], page['baud'], page['level'], page['phaseno'], page['cycleno'], page['frameno'], page['capcode'], page['msg']))
+                c.execute('INSERT INTO flex_pages(pid, msgtime, baud, level, phaseno, cycleno, frameno, capcode) VALUES (?, datetime(?), ?, ?, ?, ?, ?, ?)',
+                              (pid, page['msgts'], page['baud'], page['level'], page['phaseno'], page['cycleno'], page['frameno'], page['capcode']))
                 c.execute('INSERT INTO pages_fts(pid, msg) VALUES (?, ?)', (pid, page['msg']))
                 db.commit()
             else:
