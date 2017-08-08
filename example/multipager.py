@@ -19,46 +19,77 @@ from gnuradio.filter import pfb
 import argparse
 import trollius as asyncio
 import exceptions
+import logging
 import osmosdr
 import re
 import subprocess
 import sip
 import sys
+import zmq
+
+# Minimal setup for Trollius to log errors in async routines
+logging.basicConfig(level = logging.DEBUG)
 
 # Command to run multimon-ng
 # Can't avoid using sox (for unknown reasons multimon-ng doesn't like direct output from GNURadio) so convert from our channel rate to what it wants
-cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -e -u -"
+cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -e -u --timestamp -"
 
-pocsagre = re.compile('([A-Z0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
-flexre = re.compile('FLEX: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) ([0-9]+)/([0-9]+)/([A-Za-z]) ([0-9]+).([0-9]+) \[([0-9]+)\] ALN (.*)')
-def parse_multimon(fh, chfreq):
+pocsagre = re.compile('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}): POCSAG([0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
+flexre = re.compile('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}): FLEX: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) ([0-9]+)/([0-9]+)/([A-Za-z]) ([0-9]+).([0-9]+) \[([0-9]+)\] ALN (.*)')
+def parse_multimon(bcast, fh, chfreq):
     line = fh.readline().strip()
-    if print_pocsag(chfreq, line):
+    if process_pocsag(bcast, chfreq, line):
         return
-    elif print_flex(chfreq, line):
+    elif process_flex(bcast, chfreq, line):
         return
     else:
         print('Unparseable line "%s"' % (line))
 
-def print_pocsag(chfreq, line):
+def process_pocsag(bcast, chfreq, line):
     m = pocsagre.match(line)
     if m == None:
         return False
-    (rate, address, function, ptype, msg) = m.groups()
-    print('%.4f Mhz: %s: Address %s Function: %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
+    (capts, rate, address, function, ptype, msg) = m.groups()
+    if bcast == None:
+        print('%.4f Mhz: POCSAG%s: Address %s Function: %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
+    else:
+        bcast.send_json({
+            'chfreq' : chfreq,
+            'type' : 'POCSAG',
+            'capts' : capts,
+            'rate' : int(rate),
+            'address' : int(address),
+            'function' : int(function),
+            'ptype' : ptype,
+            'msg' : msg
+            })
     return True
 
-def print_flex(chfreq, line):
+def process_flex(bcast, chfreq, line):
     m = flexre.match(line)
     if m == None:
         return False
-    (ts, baud, level, phaseno, cycleno, frameno, capcode, msg) = m.groups()
-    print('%.4f MHz: FLEX %s %s/%s/%s %s.%s [%s] ALN: %s' % (chfreq / 1e6, ts, baud, level, phaseno, cycleno, frameno, capcode, msg))
-
+    (capts, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg) = m.groups()
+    if bcast == None:
+        print('%.4f MHz: FLEX %s %s/%s/%s %s.%s [%s] ALN: %s' % (chfreq / 1e6, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg))
+    else:
+        bcast.send_json({
+            'chfreq' : chfreq,
+            'type' : 'FLEX',
+            'capts' : capts,
+            'msgts' : msgts,
+            'baud' : int(baud),
+            'level' : int(level),
+            'phaseno' : phaseno,
+            'cycleno' : int(cycleno),
+            'frameno' : int(frameno, 10),
+            'capcode' : int(capcode, 10),
+            'msg' : msg
+            })
     return True
 
 class MultiPager(gr.top_block):
-    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, do_audio, loop,
+    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, do_audio, bcast, loop,
                      filename = None, file_samprate = None,
                      osmo_args = None, osmo_freq_cor = None, osmo_rf_gain = None, osmo_if_gain = None, osmo_bb_gain = None):
         gr.top_block.__init__(self, "Multipager")
@@ -130,7 +161,7 @@ class MultiPager(gr.top_block):
 
                 self.connect((self.pfb_channelizer_ccf_0, i), (fm, 0))
                 self.fms[chfreq] = fm
-                loop.add_reader(fm.p.stdout, parse_multimon, fm.p.stdout, chfreq)
+                loop.add_reader(fm.p.stdout, parse_multimon, bcast, fm.p.stdout, chfreq)
             else:
                 n = blocks.null_sink(gr.sizeof_gr_complex*1)
                 self.connect((self.pfb_channelizer_ccf_0, i), (n, 0))
@@ -191,6 +222,7 @@ Sample usage:
     parser.add_argument('-q', '--squelch', type = float, help = 'Squelch level (dB) for detection', default = -20)
     parser.add_argument('-n', '--audio', action = 'store_true', help = 'Enable audio on channel 0', default = False)
     parser.add_argument('-o', '--outscale', type = int, help = 'Amount to scale output by', default = 10000)
+    parser.add_argument('-z', '--zmq', type = str, help = 'Bind to this ZMQ and send messages')
 
     args = parser.parse_args()
     if not (args.args == None) ^ (args.samplefile == None):
@@ -198,6 +230,13 @@ Sample usage:
 
     if args.samplefile != None and args.filerate == None:
         parser.error('Must specify sample rate when using file')
+
+    if args.zmq != None:
+        ctx = zmq.Context.instance()
+        bcast = ctx.socket(zmq.PUB)
+        bcast.bind(args.zmq)
+    else:
+        bcast = None
 
     ch_width = 25e3
     audio_rate = 22.05e3
@@ -211,6 +250,7 @@ Sample usage:
                         args.squelch,
                         args.outscale,
                         args.audio,
+                        bcast,
                         loop,
                         filename = args.samplefile,
                         file_samprate = args.filerate,
