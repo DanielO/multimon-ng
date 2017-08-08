@@ -58,7 +58,7 @@ def print_flex(chfreq, line):
     return True
 
 class MultiPager(gr.top_block):
-    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, loop,
+    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, do_audio, loop,
                      filename = None, file_samprate = None,
                      osmo_args = None, osmo_freq_cor = None, osmo_rf_gain = None, osmo_if_gain = None, osmo_bb_gain = None):
         gr.top_block.__init__(self, "Multipager")
@@ -126,7 +126,7 @@ class MultiPager(gr.top_block):
             if sel[i]:
                 print("Channel %d %.3f MHz" % (i, chfreq / 1e6))
                 command = cmdpat.format(audio_in = ch_width, audio_out = audio_rate)
-                fm = FMtoCommand(squelch, int(ch_width), 5e3, out_scale, chfreq, command, do_audio = (i == 0) and False)
+                fm = FMtoCommand(squelch, int(ch_width), 5e3, out_scale, chfreq, command, do_audio = (i == 0) and do_audio)
 
                 self.connect((self.pfb_channelizer_ccf_0, i), (fm, 0))
                 self.fms[chfreq] = fm
@@ -170,7 +170,15 @@ class FMtoCommand(gr.hier_block2):
             self.connect((self.mult, 0), (self.audio_sink, 0))
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class = argparse.RawDescriptionHelpFormatter, epilog =
+    '''Read from a file or sample using the Osmocom SDR interface and decode pager channels.
+Splits the sampled data into equal 25kHz segments and does FM decoding
+then uses sox to resample to 22050Hz and pass to multimon-ng.
+Sample usage:
+  Read from samples.raw (882kSPS) acquired at a centre frequency of 148.6625MHz and process 35 channels
+    multipager.py -s samples.raw -R 882000 -f 148662500 -c 35
+  Sample 35 channels from a HackRF at 148.6625MHz with 0dB RF gain, 34dB IF gain, 44dB BB gain, 10 PPM correction
+    multipager.py -a hackrf -f 148662500 -c 35 -r 0 -l 34 -g 44 -p 10''')
     parser.add_argument('-f', '--frequency', type = float, help = 'Centre frequency to tune to', required = True)
     parser.add_argument('-c', '--channels', type = int, help = 'Number of channels at 25kHz each to sample for', required = True)
     parser.add_argument('-a', '--args', type = str, help = 'Osmocom SDR arguments')
@@ -202,6 +210,7 @@ def main():
                         audio_rate,
                         args.squelch,
                         args.outscale,
+                        args.audio,
                         loop,
                         filename = args.samplefile,
                         file_samprate = args.filerate,
