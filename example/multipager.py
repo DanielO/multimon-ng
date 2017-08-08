@@ -16,6 +16,7 @@ from gnuradio.eng_option import eng_option
 from gnuradio.filter import firdes
 from gnuradio.filter import pfb
 
+import argparse
 import trollius as asyncio
 import exceptions
 import osmosdr
@@ -169,26 +170,46 @@ class FMtoCommand(gr.hier_block2):
             self.connect((self.mult, 0), (self.audio_sink, 0))
 
 def main():
-    freq = 148.6625e6
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f', '--frequency', type = float, help = 'Centre frequency to tune to', required = True)
+    parser.add_argument('-c', '--channels', type = int, help = 'Number of channels at 25kHz each to sample for', required = True)
+    parser.add_argument('-a', '--args', type = str, help = 'Osmocom SDR arguments')
+    parser.add_argument('-s', '--samplefile', type = str, help = 'Process file of complex samples')
+    parser.add_argument('-R', '--filerate', type = int, help = 'Sample rate of file (SPS)')
+    parser.add_argument('-p', '--ppm', type = float, help = 'PPM error to correct for when using Osmocom SDR')
+    parser.add_argument('-r', '--rfgain', type = int, help = 'RF gain for Osmocom SDR')
+    parser.add_argument('-g', '--bbgain', type = int, help = 'Baseband gain for Osmocom SDR')
+    parser.add_argument('-l', '--ifgain', type = int, help = 'IF gain for Osmocom SDR')
+    parser.add_argument('-q', '--squelch', type = float, help = 'Squelch level (dB) for detection', default = -20)
+    parser.add_argument('-n', '--audio', action = 'store_true', help = 'Enable audio on channel 0', default = False)
+    parser.add_argument('-o', '--outscale', type = int, help = 'Amount to scale output by', default = 10000)
+
+    args = parser.parse_args()
+    if not (args.args == None) ^ (args.samplefile == None):
+        parser.error('Must have Osmocom SDR arguments or samplefile')
+
+    if args.samplefile != None and args.filerate == None:
+        parser.error('Must specify sample rate when using file')
+
     ch_width = 25e3
     audio_rate = 22.05e3
-    num_chan = 35
-    squelch = -20
-    out_scale = 10000
-
-    # File must be complex samples
-    samplefile = 'sampler-22050x40.raw'
 
     loop = asyncio.get_event_loop()
 
-    tb = MultiPager(freq, ch_width, num_chan, audio_rate, squelch, out_scale, loop,
-                        #filename = samplefile,
-                        #file_samprate = 22.05e3 * 40,
-                        osmo_args = "hackrf",
-                        osmo_freq_cor = 10,
-                        osmo_rf_gain = 0,
-                        osmo_if_gain = 36,
-                        osmo_bb_gain = 44,
+    tb = MultiPager(args.frequency,
+                        ch_width,
+                        args.channels,
+                        audio_rate,
+                        args.squelch,
+                        args.outscale,
+                        loop,
+                        filename = args.samplefile,
+                        file_samprate = args.filerate,
+                        osmo_args = args.args,
+                        osmo_freq_cor = args.ppm,
+                        osmo_rf_gain = args.rfgain,
+                        osmo_if_gain = args.ifgain,
+                        osmo_bb_gain = args.bbgain,
                         )
     tb.start()
     try:
