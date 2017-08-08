@@ -13,6 +13,7 @@ def main():
     if args.db != None:
         db = sqlite3.connect(args.db)
         c = db.cursor()
+        c.execute('CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts4(pid, msg);')
         c.execute('''
 CREATE TABLE IF NOT EXISTS pages(
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,14 +62,18 @@ CREATE TABLE IF NOT EXISTS flex_pages(
             if page['type'] == 'POCSAG':
                 c.execute('INSERT INTO pages(type, chfreq, captime) VALUES (?, ?, datetime(?))',
                               (page['type'], page['chfreq'], page['capts']))
+                pid = c.lastrowid
                 c.execute('INSERT INTO pocsag_pages(pid, rate, address, func, ptype, msg) VALUES (?, ?, ?, ?, ?, ?)',
-                              (c.lastrowid, page['rate'], page['address'], page['function'], page['ptype'], page['msg']))
+                              (pid, page['rate'], page['address'], page['function'], page['ptype'], page['msg']))
+                c.execute('INSERT INTO pages_fts(pid, msg) VALUES (?, ?)', (pid, page['msg']))
                 db.commit()
             elif page['type'] == 'FLEX':
                 c.execute('INSERT INTO pages(type, chfreq, captime) VALUES (?, ?, datetime(?))',
                               (page['type'], page['chfreq'], page['capts']))
+                pid = c.lastrowid
                 c.execute('INSERT INTO flex_pages(pid, msgtime, baud, level, phaseno, cycleno, frameno, capcode, msg) VALUES (?, datetime(?), ?, ?, ?, ?, ?, ?, ?)',
-                              (c.lastrowid, page['msgts'], page['baud'], page['level'], page['phaseno'], page['cycleno'], page['frameno'], page['capcode'], page['msg']))
+                              (pid, page['msgts'], page['baud'], page['level'], page['phaseno'], page['cycleno'], page['frameno'], page['capcode'], page['msg']))
+                c.execute('INSERT INTO pages_fts(pid, msg) VALUES (?, ?)', (pid, page['msg']))
                 db.commit()
             else:
                 print('Unknown page type ' + page['type'])
