@@ -36,6 +36,7 @@ logging.basicConfig(level = logging.DEBUG)
 cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -e -u --timestamp -"
 
 pocsagre = re.compile('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}): POCSAG([0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
+# FLEX supports other pages types, just graph alphanumeric for now
 flexre = re.compile('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}): FLEX: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) ([0-9]+)/([0-9]+)/([A-Za-z]) ([0-9]+).([0-9]+) \[([0-9]+)\] ALN (.*)')
 def parse_multimon(bcast, fh, chfreq):
     line = fh.readline().strip()
@@ -210,11 +211,18 @@ def main():
     '''Read from a file or sample using the Osmocom SDR interface and decode pager channels.
 Splits the sampled data into equal 25kHz segments and does FM decoding
 then uses sox to resample to 22050Hz and pass to multimon-ng.
+When using an RTL-SDR you need to pick a number of channels that results in a valid sample rate of..
+240000 300000 960000 1152000 1200000 1440000 1600000 1800000 1920000 2400000 SPS
+For 25kHz channels this means one of 12 48 64 72 96
 Sample usage:
   Read from samples.raw (882kSPS) acquired at a centre frequency of 148.6625MHz and process 35 channels
     multipager.py -s samples.raw -R 882000 -f 148662500 -c 35
   Sample 35 channels from a HackRF at 148.6625MHz with 0dB RF gain, 34dB IF gain, 44dB BB gain, 10 PPM correction
-    multipager.py -a hackrf -f 148662500 -c 35 -r 0 -l 34 -g 44 -p 10''')
+    multipager.py -a hackrf -f 148662500 -c 35 -r 0 -l 34 -g 44 -p 10
+  Sample 12 channels from am RTL-SDR at 148.6625MHz with 65dB of total gain and play channel 0 as audio
+    multipager.py -a rtl -f 148662500 -c 12 -r 65 -n
+  Sample 12 channels from am RTL-SDR at 148.6625MHz with 65dB of total gain and emit ZMQ events for decoded pages
+    multipager.py -a rtl -f 148662500 -c 12 -r 65 -z 'tcp://127.0.0.1:9000'''')
     parser.add_argument('-f', '--frequency', type = float, help = 'Centre frequency to tune to', required = True)
     parser.add_argument('-c', '--channels', type = int, help = 'Number of channels at 25kHz each to sample for', required = True)
     parser.add_argument('-a', '--args', type = str, help = 'Osmocom SDR arguments')
