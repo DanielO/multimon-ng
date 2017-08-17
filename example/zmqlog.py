@@ -1,5 +1,19 @@
 #!/usr/bin/env python
 
+# Sample SQL
+#
+### Insert names into frequency table
+# INSERT INTO frequencies VALUES(148812500.0,'SAGRN');
+# INSERT INTO frequencies VALUES(148562500.0,'Hutchison F1');
+# INSERT INTO frequencies VALUES(148637500.0,'Hutchison F2');
+# INSERT INTO frequencies VALUES(148662500.0,'Hospital');
+#
+### List most recent 20 pages with frequency name, page type, etc
+# SELECT pages.captime, frequencies.name, pages.type, pocsag_pages.ptype, pocsag_pages.address, flex_pages.capcode, pages.msg FROM frequencies, pages LEFT OUTER JOIN pocsag_pages ON pages.id == pocsag_pages.pid LEFT OUTER JOIN flex_pages ON pages.id == flex_pages.pid WHERE frequencies.freq == pages.chfreq ORDER BY pages.captime DESC LIMIT 20;
+#
+### As above but with the text 'MFS' in the message
+# SELECT pages.captime, frequencies.name, pages.type, pocsag_pages.ptype, pocsag_pages.address, flex_pages.capcode, pages.msg FROM frequencies, pages LEFT OUTER JOIN pocsag_pages ON pages.id == pocsag_pages.pid LEFT OUTER JOIN flex_pages ON pages.id == flex_pages.pid WHERE frequencies.freq == pages.chfreq AND pages.id IN (SELECT pid FROM pages_fts WHERE msg MATCH 'mfs') ORDER BY pages.captime DESC LIMIT 20;
+
 import argparse
 import sqlite3
 import zmq
@@ -46,6 +60,12 @@ CREATE TABLE IF NOT EXISTS flex_pages(
     capcode INTEGER,
 
     FOREIGN KEY(pid) REFERENCES pages(id)
+);
+''')
+        c.execute('''
+CREATE TABLE IF NOT EXISTS frequencies (
+    freq    REAL,
+    name    TEXT UNIQUE
 );
 ''')
     ctx = zmq.Context.instance()
