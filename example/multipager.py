@@ -222,7 +222,8 @@ Sample usage:
   Sample 12 channels from am RTL-SDR at 148.6625MHz with 65dB of total gain and play channel 0 as audio
     multipager.py -a rtl -f 148662500 -c 12 -r 65 -n
   Sample 12 channels from am RTL-SDR at 148.6625MHz with 65dB of total gain and emit ZMQ events for decoded pages
-    multipager.py -a rtl -f 148662500 -c 12 -r 65 -z 'tcp://127.0.0.1:9000'''')
+    multipager.py -a rtl -f 148662500 -c 12 -r 65 -z 'tcp://127.0.0.1:9000'
+''')
     parser.add_argument('-f', '--frequency', type = float, help = 'Centre frequency to tune to', required = True)
     parser.add_argument('-c', '--channels', type = int, help = 'Number of channels at 25kHz each to sample for', required = True)
     parser.add_argument('-a', '--args', type = str, help = 'Osmocom SDR arguments')
