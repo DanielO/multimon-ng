@@ -112,7 +112,8 @@ class MultiPager(gr.top_block):
                 raise(exceptions.ValueError('File sample %f rate must be >= computed sample rate %f' % (file_samprate, sample_rate)))
         else:
             self.source = osmosdr.source(args = osmo_args)
-            self.source.set_sample_rate(sample_rate)
+            if self.source.set_sample_rate(sample_rate) != sample_rate:
+                raise(exceptions.ValueError('Wanted %.4f kSPS got %.4f kSPS' % (sample_rate / 1e3, self.source.get_sample_rate() / 1e3)))
             self.source.set_center_freq(freq, 0)
             if osmo_freq_cor != None:
                 self.source.set_freq_corr(osmo_freq_cor, 0)
