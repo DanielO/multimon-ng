@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/local/bin/python2.7
 
 # Sample SQL
 #
@@ -15,13 +15,28 @@
 # SELECT pages.captime, frequencies.name, pages.type, pocsag_pages.ptype, pocsag_pages.address, flex_pages.capcode, pages.msg FROM frequencies, pages LEFT OUTER JOIN pocsag_pages ON pages.id == pocsag_pages.pid LEFT OUTER JOIN flex_pages ON pages.id == flex_pages.pid WHERE frequencies.freq == pages.chfreq AND pages.id IN (SELECT pid FROM pages_fts WHERE msg MATCH 'mfs') ORDER BY pages.captime DESC LIMIT 20;
 
 import argparse
+import daemon
+import daemon.pidfile
+import logging
+import logging.handlers
 import sqlite3
+import sys
 import zmq
+
+class NullContextManager(object):
+    def __init__(self, dummy_resource=None):
+        self.dummy_resource = dummy_resource
+    def __enter__(self):
+        return self.dummy_resource
+    def __exit__(self, *args):
+        pass
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--db', type = str, help = 'SQLite3 DB to write to')
     parser.add_argument('-z', '--zmq', type = str, help = 'ZMQ to listen for', required = True)
+    parser.add_argument('-L', '--log', type = str, help = 'Log file (will cause it to daemonise)')
+    parser.add_argument('-P', '--pidfile', type = str, help = 'PID file (only used with --log)')
     args = parser.parse_args()
 
     if args.db != None:
@@ -68,16 +83,61 @@ CREATE TABLE IF NOT EXISTS frequencies (
     name    TEXT UNIQUE
 );
 ''')
+
+    # Configure logging
+    global logger
+    logger = logging.getLogger('zmqlog')
+    logger.setLevel(logging.DEBUG)
+
+    if args.log != None:
+        lh = logging.handlers.WatchedFileHandler(args.log)
+    else:
+        lh = logging.StreamHandler()
+
+    lh.setFormatter(logging.Formatter('%(asctime)s %(name)s:%(levelname)s: %(message)s', '%Y/%m/%d %H:%M:%S'))
+    logger.addHandler(lh)
+
+    daemon_context = daemon.DaemonContext()
+    daemon_context.files_preserve = [lh.stream]
+
+    # Daemonise if we have a log file
+    if args.log != None:
+        pidfile = None
+        if args.pidfile != None:
+            pidfile = daemon.pidfile.PIDLockFile(args.pidfile)
+
+        ctxmgr = daemon.DaemonContext(pidfile = pidfile, files_preserve = [lh.stream])
+    else:
+        ctxmgr = NullContextManager()
+
+    with ctxmgr:
+        try:
+            dologging(args.zmq, args.db)
+        except sqlite3.Error as e:
+            logger.error("SQL error: " + str(e.args[0]))
+        except sqlite3.OperationalError as e:
+            logger.error("SQL operataional error: " + str(e.args[0]))
+        except:
+            e = sys.exc_info()[0]
+            logger.error('Exception: ' + str(e))
+
+    logger.error('Exiting')
+
+def dologging(zmqname, dbname):
+    logger.error('zmqlog starting')
     ctx = zmq.Context.instance()
     listener = ctx.socket(zmq.SUB)
-    listener.connect(args.zmq)
+    listener.connect(zmqname)
     listener.setsockopt(zmq.SUBSCRIBE, b'')
 
+    # Re-open DB because daemon will close the file handle
+    if dbname != None:
+        db = sqlite3.connect(dbname)
+        c = db.cursor()
     while True:
         page = listener.recv_json()
-        if args.db == None:
-            print(page)
-        else:
+        logger.info(page)
+        if db != None:
             if page['type'] == 'POCSAG':
                 c.execute('INSERT INTO pages(type, chfreq, captime, msg) VALUES (?, ?, datetime(?), ?)',
                               (page['type'], page['chfreq'], page['capts'], page['msg']))
@@ -95,7 +155,7 @@ CREATE TABLE IF NOT EXISTS frequencies (
                 c.execute('INSERT INTO pages_fts(pid, msg) VALUES (?, ?)', (pid, page['msg']))
                 db.commit()
             else:
-                print('Unknown page type ' + page['type'])
+                logger.error('Unknown page type ' + page['type'])
 
 if __name__ == '__main__':
     main()

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/local/bin/python2.7
 # -*- coding: utf-8 -*-
 ##################################################
 # GNU Radio Python Flow Graph
@@ -6,6 +6,7 @@
 # Generated: Thu Aug  3 14:04:34 2017
 ##################################################
 
+import numpy
 from gnuradio import analog
 from gnuradio import audio
 from gnuradio import blocks
@@ -18,8 +19,11 @@ from gnuradio.filter import pfb
 
 import argparse
 import trollius as asyncio
+import daemon
+import daemon.pidfile
 import exceptions
 import logging
+import logging.handlers
 import osmosdr
 import re
 import subprocess
@@ -28,36 +32,45 @@ import string
 import sys
 import zmq
 
-# Minimal setup for Trollius to log errors in async routines
-logging.basicConfig(level = logging.DEBUG)
-
 # Command to run multimon-ng
 # Can't avoid using sox (for unknown reasons multimon-ng doesn't like direct output from GNURadio) so convert from our channel rate to what it wants
-cmdpat = "sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -e -u --timestamp -"
+cmdpat = "/usr/local/bin/sox -t raw -esigned-integer -b16 -r {audio_in} - -esigned-integer -b16 -r {audio_out} -t raw - | /usr/local/bin/multimon-ng -t raw -q -a POCSAG512 -a POCSAG1200 -a POCSAG2400 -a FLEX -e -u --timestamp -"
 
 pocsagre = re.compile('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}): POCSAG([0-9]+): Address: +([0-9]+) +Function: +([0-9]+) +([A-Za-z]+): (.*)')
+
+class NullContextManager(object):
+    def __init__(self, dummy_resource=None):
+        self.dummy_resource = dummy_resource
+    def __enter__(self):
+        return self.dummy_resource
+    def __exit__(self, *args):
+        pass
+
 # FLEX supports other pages types, just graph alphanumeric for now
 flexre = re.compile('([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}): FLEX: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) ([0-9]+)/([0-9]+)/([A-Za-z]) ([0-9]+).([0-9]+) \[([0-9]+)\] ALN (.*)')
-def parse_multimon(bcast, fh, chfreq):
+def parse_multimon(zmqh, fh, chfreq, proc):
+    status = proc.poll()
+    if status != None:
+        logger.error('Process for %.3f stopped with status %d' % (chfreq / 1e6, status))
+        sys.exit(1)
     line = fh.readline().strip()
-    if process_pocsag(bcast, chfreq, line):
+    if process_pocsag(zmqh, chfreq, line):
         return
-    elif process_flex(bcast, chfreq, line):
+    elif process_flex(zmqh, chfreq, line):
         return
     else:
-        print('Unparseable line "%s"' % (line))
+        logger.warning('Unparseable line "%s" for %.3f' % (line), chfreq / 1e6)
 
-def process_pocsag(bcast, chfreq, line):
+def process_pocsag(zmqh, chfreq, line):
     m = pocsagre.match(line)
     if m == None:
         return False
     (capts, rate, address, function, ptype, msg) = m.groups()
     printable = set(string.printable)
     msg = filter(lambda x: x in printable, msg)
-    if bcast == None:
-        print('%.4f Mhz: POCSAG%s: Address %s Function: %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
-    else:
-        bcast.send_json({
+    logger.info('%.4f MHz: POCSAG %s %s %s %s: %s' % (chfreq / 1e6, rate, address, function, ptype, msg))
+    if zmqh != None:
+        zmqh.send_json({
             'chfreq' : chfreq,
             'type' : 'POCSAG',
             'capts' : capts,
@@ -69,17 +82,16 @@ def process_pocsag(bcast, chfreq, line):
             })
     return True
 
-def process_flex(bcast, chfreq, line):
+def process_flex(zmqh, chfreq, line):
     m = flexre.match(line)
     if m == None:
         return False
     (capts, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg) = m.groups()
     printable = set(string.printable)
     msg = filter(lambda x: x in printable, msg)
-    if bcast == None:
-        print('%.4f MHz: FLEX %s %s/%s/%s %s.%s [%s] ALN: %s' % (chfreq / 1e6, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg))
-    else:
-        bcast.send_json({
+    logger.info('%.4f MHz: FLEX %s %s/%s/%s %s.%s [%s] ALN: %s' % (chfreq / 1e6, msgts, baud, level, phaseno, cycleno, frameno, capcode, msg))
+    if zmqh != None:
+        zmqh.send_json({
             'chfreq' : chfreq,
             'type' : 'FLEX',
             'capts' : capts,
@@ -95,7 +107,7 @@ def process_flex(bcast, chfreq, line):
     return True
 
 class MultiPager(gr.top_block):
-    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, do_audio, bcast, loop,
+    def __init__(self, freq, ch_width, num_chan, audio_rate, squelch, out_scale, do_audio, zmqh, loop,
                      filename = None, file_samprate = None,
                      osmo_args = None, osmo_freq_cor = None, osmo_rf_gain = None, osmo_if_gain = None, osmo_bb_gain = None):
         gr.top_block.__init__(self, "Multipager")
@@ -141,7 +153,7 @@ class MultiPager(gr.top_block):
         # Connections
         ##################################################
         if file_samprate != None:
-            print('Resampling %f' % (file_samprate / sample_rate))
+            logger.info('Resampling %f' % (file_samprate / sample_rate))
             self.filter = grfilter.fir_filter_ccf(1, firdes.low_pass(
                 1, file_samprate, sample_rate / 2, 1e4, firdes.WIN_HAMMING, 6.76))
             self.resampler = grfilter.fractional_resampler_cc(0, file_samprate / sample_rate)
@@ -162,13 +174,13 @@ class MultiPager(gr.top_block):
                 chfreq = freq + ch_width * i
 
             if sel[i]:
-                print("Channel %d %.3f MHz" % (i, chfreq / 1e6))
+                logger.info("Channel %d %.3f MHz" % (i, chfreq / 1e6))
                 command = cmdpat.format(audio_in = ch_width, audio_out = audio_rate)
                 fm = FMtoCommand(squelch, int(ch_width), 5e3, out_scale, chfreq, command, do_audio = (i == 0) and do_audio)
 
                 self.connect((self.pfb_channelizer_ccf_0, i), (fm, 0))
                 self.fms[chfreq] = fm
-                loop.add_reader(fm.p.stdout, parse_multimon, bcast, fm.p.stdout, chfreq)
+                loop.add_reader(fm.p.stdout, parse_multimon, zmqh, fm.p.stdout, chfreq, fm.p)
             else:
                 n = blocks.null_sink(gr.sizeof_gr_complex*1)
                 self.connect((self.pfb_channelizer_ccf_0, i), (n, 0))
@@ -189,6 +201,7 @@ class FMtoCommand(gr.hier_block2):
         self.blocks_float_to_short = blocks.float_to_short(1, out_scale)
         # OSX: if you get Resource Temporarily Unavailable you probably need to increase maxproc, eg
         # sudo launchctl limit maxproc 2000 3000
+        logger.debug("Channel %.3f: Starting %s" % (freq / 1e6, str(command)))
         self.p = subprocess.Popen(command, shell = True, stdin = subprocess.PIPE, stdout = subprocess.PIPE)
         self.sink = blocks.file_descriptor_sink(gr.sizeof_short*1, self.p.stdin.fileno())
         self.connect(self, (self.analog_pwr_squelch, 0))
@@ -238,6 +251,8 @@ Sample usage:
     parser.add_argument('-n', '--audio', action = 'store_true', help = 'Enable audio on channel 0', default = False)
     parser.add_argument('-o', '--outscale', type = int, help = 'Amount to scale output by', default = 10000)
     parser.add_argument('-z', '--zmq', type = str, help = 'Bind to this ZMQ and send messages')
+    parser.add_argument('-L', '--log', type = str, help = 'Log file (will cause it to daemonise)')
+    parser.add_argument('-P', '--pidfile', type = str, help = 'PID file (only used with --log)')
 
     args = parser.parse_args()
     if not (args.args == None) ^ (args.samplefile == None):
@@ -246,12 +261,49 @@ Sample usage:
     if args.samplefile != None and args.filerate == None:
         parser.error('Must specify sample rate when using file')
 
+    # Configure logging
+    global logger
+    logger = logging.getLogger('multipager')
+    logger.setLevel(logging.INFO)
+
+    if args.log != None:
+        lh = logging.handlers.WatchedFileHandler(args.log)
+    else:
+        lh = logging.StreamHandler()
+
+    lh.setFormatter(logging.Formatter('%(asctime)s %(name)s:%(levelname)s: %(message)s', '%Y/%m/%d %H:%M:%S'))
+    logger.addHandler(lh)
+
+    daemon_context = daemon.DaemonContext()
+    daemon_context.files_preserve = [lh.stream]
+
+    # Daemonise if we have a log file
+    if args.log != None:
+        if args.pidfile != None:
+            pidfile = daemon.pidfile.PIDLockFile(args.pidfile)
+
+        ctxmgr = daemon.DaemonContext(pidfile = pidfile, files_preserve = [lh.stream])
+    else:
+        ctxmgr = NullContextManager()
+
+    with ctxmgr:
+        try:
+            multipager(args)
+        except sqlite3.Error as e:
+            logger.error("Sqlite3 error:", e.args[0])
+        except:
+            e = sys.exc_info()[0]
+            logger.error('Exception: ' + str(e))
+    logger.error('Exiting')
+
+def multipager(args):
+    logger.warning('Starting multipager')
     if args.zmq != None:
         ctx = zmq.Context.instance()
-        bcast = ctx.socket(zmq.PUB)
-        bcast.bind(args.zmq)
+        zmqh = ctx.socket(zmq.PUB)
+        zmqh.bind(args.zmq)
     else:
-        bcast = None
+        zmqh = None
 
     ch_width = 25e3
     audio_rate = 22.05e3
@@ -265,7 +317,7 @@ Sample usage:
                         args.squelch,
                         args.outscale,
                         args.audio,
-                        bcast,
+                        zmqh,
                         loop,
                         filename = args.samplefile,
                         file_samprate = args.filerate,
