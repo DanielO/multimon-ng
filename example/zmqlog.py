@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS pages(
     msg     TEXT
 );
 ''')
+        c.execute('CREATE INDEX IF NOT EXISTS pages_id ON pages(id)')
+        c.execute('CREATE INDEX IF NOT EXISTS pages_captime ON pages(captime)')
         c.execute('''
 CREATE TABLE IF NOT EXISTS pocsag_pages(
     pid     INTEGER,
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS pocsag_pages(
     FOREIGN KEY(pid) REFERENCES pages(id)
 );
 ''')
+        c.execute('CREATE INDEX IF NOT EXISTS pocsag_pages_id ON pocsag_pages(pid)')
         c.execute('''
 CREATE TABLE IF NOT EXISTS flex_pages(
     pid     INTEGER,
@@ -77,6 +80,7 @@ CREATE TABLE IF NOT EXISTS flex_pages(
     FOREIGN KEY(pid) REFERENCES pages(id)
 );
 ''')
+        c.execute('CREATE INDEX IF NOT EXISTS flex_pages_id ON flex_pages(pid)')
         c.execute('''
 CREATE TABLE IF NOT EXISTS frequencies (
     freq    REAL,
