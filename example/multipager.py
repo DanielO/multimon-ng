@@ -289,8 +289,6 @@ Sample usage:
     with ctxmgr:
         try:
             multipager(args)
-        except sqlite3.Error as e:
-            logger.error("Sqlite3 error:", e.args[0])
         except:
             e = sys.exc_info()[0]
             logger.error('Exception: ' + str(e))
